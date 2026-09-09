@@ -1,4 +1,6 @@
-# Healthcare Appointment Booking System
+# HealthBook-API
+
+Healthcare Appointment Booking System
 
 Async FastAPI backend for a healthcare appointment booking portfolio project.
 
