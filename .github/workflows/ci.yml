@@ -1,0 +1,77 @@
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: healthcare
+          POSTGRES_USER: healthcare
+          POSTGRES_PASSWORD: healthcare
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U healthcare -d healthcare"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Poetry
+        run: pip install poetry==1.8.5
+      - name: Install dependencies
+        run: poetry install
+      - name: Lint
+        run: poetry run ruff check .
+      - name: Format check
+        run: poetry run black --check .
+      - name: Test
+        run: poetry run pytest
+      - name: Build Docker image
+        run: docker build -t healthcare-appointment-booking:${{ github.sha }} .
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: login-ecr
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+        run: |
+          docker build -t "$REGISTRY/$REPOSITORY:${{ github.sha }}" .
+          docker push "$REGISTRY/$REPOSITORY:${{ github.sha }}"
+      - name: Deploy App Runner service
+        env:
+          IMAGE_IDENTIFIER: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          aws apprunner update-service \
+            --service-arn "${{ secrets.APP_RUNNER_SERVICE_ARN }}" \
+            --source-configuration "{
+              \"ImageRepository\": {
+                \"ImageIdentifier\": \"$IMAGE_IDENTIFIER\",
+                \"ImageRepositoryType\": \"ECR\"
+              },
+              \"AutoDeploymentsEnabled\": true
+            }"
